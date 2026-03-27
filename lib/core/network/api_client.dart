@@ -7,21 +7,17 @@ class ApiClient {
     receiveTimeout: const Duration(seconds: 3),
   ));
 
-  static Future<Map<String, dynamic>?> fetchProductData(String code) async {
+  static Future<Map<String, dynamic>?> scanLabelWithAi(String imagePath) async {
     try {
-      // Endpoint mock, assumes SientiaERP has an endpoint to fetch product by code
-      // final response = await _dio.get('/products/$code');
-      // return response.data;
-      
-      // MOCK DATA for now to ensure prototype works offline
-      await Future.delayed(const Duration(milliseconds: 300));
-      return {
-        'code': code,
-        'description': 'Producto Descargado Sientia',
-        'price': 25.50
-      };
+      FormData formData = FormData.fromMap({
+        "image": await MultipartFile.fromFile(imagePath, filename: "label_scan.jpg"),
+      });
+
+      final response = await _dio.post('/erp/productos/scan-label', data: formData);
+      return response.data;
     } catch (e) {
-      return null; // Devuelve null si no existe o falla conexión
+      print("Error in scanLabelWithAi: $e");
+      return null;
     }
   }
 }

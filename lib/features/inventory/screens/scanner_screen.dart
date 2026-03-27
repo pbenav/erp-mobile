@@ -2,9 +2,10 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
-import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import 'dart:typed_data';
+import 'dart:io';
+import 'package:path_provider/path_provider.dart';
 import '../../../core/utils/audio_haptic_feedback.dart';
 import '../services/inventory_sync_service.dart';
 import '../widgets/quick_add_product_dialog.dart';
@@ -28,7 +29,17 @@ class _ScannerScreenState extends ConsumerState<ScannerScreen> {
   @override
   void initState() {
     super.initState();
-    WakelockPlus.enable();
+    // Forzamos wakelock para evitar que la pantalla se apague
+    _enableWakelock();
+  }
+
+  Future<void> _enableWakelock() async {
+    try {
+      await WakelockPlus.enable();
+      debugPrint("Wakelock activado correctamente");
+    } catch (e) {
+      debugPrint("Error activando Wakelock: $e");
+    }
   }
 
   void _onBarcodeScanned(BarcodeCapture capture) async {
@@ -61,32 +72,28 @@ class _ScannerScreenState extends ConsumerState<ScannerScreen> {
 
     await AudioHapticFeedback.playSuccessBeep();
 
-    // Convertimos Uint8List a InputImage
-    // (Idealmente guardando a temporal para ML Kit)
-    final List<InputImage> inputImages = [];
-    for (var bytes in capturedFrames) {
-      inputImages.add(InputImage.fromBytes(
-        bytes: bytes,
-        metadata: InputImageMetadata(
-          size: const Size(720, 1280), // Estimado o dinámico si posible
-          rotation: InputImageRotation.rotation0deg,
-          format: InputImageFormat.bgra8888, // Ajustar según plataforma
-          bytesPerRow: 720 * 4,
-        ),
-      ));
+    String? tempPath;
+    if (capturedFrames.isNotEmpty) {
+      try {
+        final tempDir = await getTemporaryDirectory();
+        final file = File('${tempDir.path}/last_scan.jpg');
+        await file.writeAsBytes(capturedFrames.first);
+        tempPath = file.path;
+      } catch (e) {
+        debugPrint("Error saving temp frame: $e");
+      }
     }
 
-    // Nota: Por simplicidad y evitar crash de metadata binaria compleja en este paso sin path_provider, 
-    // pasaremos las imágenes si existen (InventorySyncService manejará la lista).
-    await ref.read(scannedItemsProvider.notifier).processBarcode(code, images: inputImages);
+    // Llamamos al servicio con la ruta de la imagen para que la procese Gemini
+    await ref.read(scannedItemsProvider.notifier).processBarcode(code, imagePath: tempPath);
     
     if (!mounted) return;
-    await Future.delayed(const Duration(milliseconds: 500));
+    await Future.delayed(const Duration(milliseconds: 300));
     
     if (mounted) {
       setState(() {
         isProcessing = false;
-        lastCode = null; // Reiniciamos para permitir siguiente lectura
+        lastCode = null;
         capturedFrames.clear();
       });
     }
@@ -144,11 +151,18 @@ class _ScannerScreenState extends ConsumerState<ScannerScreen> {
                 ),
                 Center(
                   child: Container(
-                    width: 280,
-                    height: 120,
+                    width: 220, // Menos ancho según feedback del usuario
+                    height: 160, // Más alto para compensar y encuadrar mejor la etiqueta
                     decoration: BoxDecoration(
-                      border: Border.all(color: Colors.cyanAccent, width: 2),
-                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: Colors.cyanAccent, width: 2.5),
+                      borderRadius: BorderRadius.circular(16),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.cyanAccent.withOpacity(0.3),
+                          blurRadius: 10,
+                          spreadRadius: 2,
+                        )
+                      ],
                     ),
                   ),
                 ),
