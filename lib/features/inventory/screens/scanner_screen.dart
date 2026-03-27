@@ -77,7 +77,8 @@ class _ScannerScreenState extends ConsumerState<ScannerScreen> {
       try {
         final tempDir = await getTemporaryDirectory();
         final file = File('${tempDir.path}/last_scan.jpg');
-        await file.writeAsBytes(capturedFrames.first);
+        // Usamos el ÚLTIMO fotograma para asegurar mejor enfoque
+        await file.writeAsBytes(capturedFrames.last);
         tempPath = file.path;
       } catch (e) {
         debugPrint("Error saving temp frame: $e");
@@ -168,9 +169,26 @@ class _ScannerScreenState extends ConsumerState<ScannerScreen> {
                 ),
                 if (isProcessing)
                   Container(
-                    color: Colors.black26,
-                    child: const Center(
-                      child: CircularProgressIndicator(color: Colors.white),
+                    color: Colors.black45,
+                    child: Center(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const CircularProgressIndicator(color: Colors.cyanAccent),
+                          const SizedBox(height: 16),
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                            decoration: BoxDecoration(
+                              color: Colors.black54,
+                              borderRadius: BorderRadius.circular(20),
+                            ),
+                            child: const Text(
+                              "ANALIZANDO CON IA...",
+                              style: TextStyle(color: Colors.cyanAccent, fontWeight: FontWeight.bold, fontSize: 12),
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
                   ),
               ],
@@ -185,10 +203,14 @@ class _ScannerScreenState extends ConsumerState<ScannerScreen> {
               child: Column(
                 children: [
                   Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      const Text("NUEVA LECTURA - TOCA PARA CONFIRMAR", 
-                        style: TextStyle(fontWeight: FontWeight.bold, color: Colors.orange, fontSize: 11)),
+                      const Expanded(
+                        child: Text(
+                          "NUEVA LECTURA - TOCA PARA CONFIRMAR", 
+                          style: TextStyle(fontWeight: FontWeight.bold, color: Colors.orange, fontSize: 10),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
                       IconButton(
                         icon: const Icon(Icons.close, color: Colors.orange, size: 20),
                         onPressed: () => ref.read(scannedItemsProvider.notifier).removeItem(pendingItems.first.code),
@@ -198,27 +220,35 @@ class _ScannerScreenState extends ConsumerState<ScannerScreen> {
                     ],
                   ),
                   const SizedBox(height: 8),
-                  SizedBox(
-                    width: double.infinity,
-                    height: 85,
-                    child: ElevatedButton(
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: Colors.orange,
-                        foregroundColor: Colors.white,
-                        elevation: 4,
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16))
-                      ),
-                      onPressed: () => ref.read(scannedItemsProvider.notifier).confirmItem(pendingItems.first.code),
-                      child: Padding(
-                        padding: const EdgeInsets.symmetric(vertical: 8.0),
+                  ConstrainedBox(
+                    constraints: const BoxConstraints(minHeight: 80),
+                    child: SizedBox(
+                      width: double.infinity,
+                      child: ElevatedButton(
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.orange,
+                          foregroundColor: Colors.white,
+                          elevation: 4,
+                          padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16))
+                        ),
+                        onPressed: () => ref.read(scannedItemsProvider.notifier).confirmItem(pendingItems.first.code),
                         child: Column(
                           mainAxisAlignment: MainAxisAlignment.center,
                           children: [
-                            Text(pendingItems.first.description, 
-                              style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                              maxLines: 1, overflow: TextOverflow.ellipsis),
-                            Text("Código: ${pendingItems.first.code} - Precio: ${pendingItems.first.price.toStringAsFixed(2)} €",
-                              style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500)),
+                            Text(
+                              pendingItems.first.description, 
+                              style: const TextStyle(fontSize: 17, fontWeight: FontWeight.bold),
+                              textAlign: TextAlign.center,
+                              maxLines: 2, 
+                              overflow: TextOverflow.ellipsis
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              "Código: ${pendingItems.first.code} - Precio: ${pendingItems.first.price.toStringAsFixed(2)} €",
+                              style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500),
+                              textAlign: TextAlign.center,
+                            ),
                           ],
                         ),
                       ),
