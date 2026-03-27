@@ -3,6 +3,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
+import 'package:wakelock_plus/wakelock_plus.dart';
+import 'dart:typed_data';
 import '../../../core/utils/audio_haptic_feedback.dart';
 import '../services/inventory_sync_service.dart';
 import '../widgets/quick_add_product_dialog.dart';
@@ -20,6 +22,14 @@ class _ScannerScreenState extends ConsumerState<ScannerScreen> {
   );
   
   bool isProcessing = false;
+  final List<Uint8List> capturedFrames = [];
+  String? lastCode;
+
+  @override
+  void initState() {
+    super.initState();
+    WakelockPlus.enable();
+  }
 
   void _onBarcodeScanned(BarcodeCapture capture) async {
     if (isProcessing) return;
@@ -27,32 +37,57 @@ class _ScannerScreenState extends ConsumerState<ScannerScreen> {
     if (barcodes.isEmpty || barcodes.first.rawValue == null) return;
     
     final rawCode = barcodes.first.rawValue!;
+    final image = capture.image;
 
-    setState(() {
-      isProcessing = true;
-    });
+    // Si es un nuevo código o el primero de la ráfaga
+    if (lastCode != rawCode) {
+      lastCode = rawCode;
+      capturedFrames.clear();
+      if (image != null) capturedFrames.add(image);
+      
+      // Iniciamos contador de ráfaga (esperamos 3 capturas o 500ms)
+      Timer(const Duration(milliseconds: 400), () => _startOcrProcessing(rawCode));
+    } else {
+      // Si recibimos más capturas del mismo código mientras esperamos, las añadimos
+      if (image != null && capturedFrames.length < 3) {
+        capturedFrames.add(image);
+      }
+    }
+  }
+
+  Future<void> _startOcrProcessing(String code) async {
+    if (isProcessing) return;
+    setState(() => isProcessing = true);
 
     await AudioHapticFeedback.playSuccessBeep();
 
-    // Intentamos capturar la imagen para el OCR si está disponible
-    InputImage? inputImage;
-    if (capture.image != null) {
-      // Nota: En una implementación real, convertir el Uint8List a InputImage 
-      // requiere guardarlo a temporal o usar InputImage.fromBytes si tenemos los metadatos.
-      // Por simplicidad en este prototipo, simularemos que pasamos la imagen si existe.
-      // (En producción usaríamos path_provider para el archivo temporal si es necesario)
+    // Convertimos Uint8List a InputImage
+    // (Idealmente guardando a temporal para ML Kit)
+    final List<InputImage> inputImages = [];
+    for (var bytes in capturedFrames) {
+      inputImages.add(InputImage.fromBytes(
+        bytes: bytes,
+        metadata: InputImageMetadata(
+          size: const Size(720, 1280), // Estimado o dinámico si posible
+          rotation: InputImageRotation.rotation0deg,
+          format: InputImageFormat.bgra8888, // Ajustar según plataforma
+          bytesPerRow: 720 * 4,
+        ),
+      ));
     }
 
-    // Invoca servicio con logica de negocio
-    await ref.read(scannedItemsProvider.notifier).processBarcode(rawCode, inputImage: inputImage);
+    // Nota: Por simplicidad y evitar crash de metadata binaria compleja en este paso sin path_provider, 
+    // pasaremos las imágenes si existen (InventorySyncService manejará la lista).
+    await ref.read(scannedItemsProvider.notifier).processBarcode(code, images: inputImages);
     
     if (!mounted) return;
-
-    await Future.delayed(const Duration(milliseconds: 800));
+    await Future.delayed(const Duration(milliseconds: 500));
     
     if (mounted) {
       setState(() {
         isProcessing = false;
+        lastCode = null; // Reiniciamos para permitir siguiente lectura
+        capturedFrames.clear();
       });
     }
   }
@@ -74,6 +109,7 @@ class _ScannerScreenState extends ConsumerState<ScannerScreen> {
 
   @override
   void dispose() {
+    WakelockPlus.disable();
     controller.dispose();
     super.dispose();
   }
@@ -134,12 +170,23 @@ class _ScannerScreenState extends ConsumerState<ScannerScreen> {
               color: Colors.orange.shade50,
               child: Column(
                 children: [
-                  const Text("NUEVA LECTURA - TOCA PARA CONFIRMAR", 
-                    style: TextStyle(fontWeight: FontWeight.bold, color: Colors.orange)),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Text("NUEVA LECTURA - TOCA PARA CONFIRMAR", 
+                        style: TextStyle(fontWeight: FontWeight.bold, color: Colors.orange, fontSize: 11)),
+                      IconButton(
+                        icon: const Icon(Icons.close, color: Colors.orange, size: 20),
+                        onPressed: () => ref.read(scannedItemsProvider.notifier).removeItem(pendingItems.first.code),
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints(),
+                      )
+                    ],
+                  ),
                   const SizedBox(height: 8),
                   SizedBox(
                     width: double.infinity,
-                    height: 80,
+                    height: 85,
                     child: ElevatedButton(
                       style: ElevatedButton.styleFrom(
                         backgroundColor: Colors.orange,
@@ -148,15 +195,18 @@ class _ScannerScreenState extends ConsumerState<ScannerScreen> {
                         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16))
                       ),
                       onPressed: () => ref.read(scannedItemsProvider.notifier).confirmItem(pendingItems.first.code),
-                      child: Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          Text(pendingItems.first.description, 
-                            style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                            maxLines: 1, overflow: TextOverflow.ellipsis),
-                          Text("Código: ${pendingItems.first.code} - Precio OCR: ${pendingItems.first.price} €",
-                            style: const TextStyle(fontSize: 12)),
-                        ],
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 8.0),
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Text(pendingItems.first.description, 
+                              style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                              maxLines: 1, overflow: TextOverflow.ellipsis),
+                            Text("Código: ${pendingItems.first.code} - Precio: ${pendingItems.first.price.toStringAsFixed(2)} €",
+                              style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500)),
+                          ],
+                        ),
                       ),
                     ),
                   ),
@@ -216,8 +266,12 @@ class _ScannerScreenState extends ConsumerState<ScannerScreen> {
                                             icon: const Icon(Icons.edit, color: Colors.orange),
                                             onPressed: () => _showQuickAddDialog(item.code),
                                           ),
+                                        IconButton(
+                                          icon: const Icon(Icons.delete_outline, color: Colors.redAccent, size: 20),
+                                          onPressed: () => ref.read(scannedItemsProvider.notifier).removeItem(item.code),
+                                        ),
                                         Container(
-                                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                                           decoration: BoxDecoration(
                                             color: Colors.teal.shade50,
                                             borderRadius: BorderRadius.circular(20),

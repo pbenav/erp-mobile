@@ -24,63 +24,90 @@ class ScannedItemsNotifier extends StateNotifier<List<ScannedItem>> {
     return rawCode.replaceAll('*', '').trim();
   }
 
-  Future<void> processBarcode(String rawCode, {InputImage? inputImage}) async {
+  Future<void> processBarcode(String rawCode, {List<InputImage>? images}) async {
     final cleanCode = _cleanBarcode(rawCode);
-
-    // Si ya existe en la lista (confirmado o no), incrementamos cantidad 
-    // pero el usuario pidió que el escaneo cree el botón de confirmación.
     
-    // Buscamos si ya existe
-    final existingIndex = state.indexWhere((item) => item.code == cleanCode);
-    
-    if (existingIndex != -1) {
-      // Si ya existe, simplemente lo movemos al principio (opcional) e incrementamos si está confirmado?
-      // El usuario dice: "se escanea... aparece como botón para que el usuario lo confirme"
-      // Si re-escanea el mismo, lo tratamos como un toque? O simplemente lo destacamos.
-      // Vamos a seguir la lógica de: Escaneo -> Aparece arriba para confirmar.
+    // Si ya existe uno "Pendiente" con el mismo código, no procesamos de nuevo
+    if (state.any((item) => item.code == cleanCode && !item.isConfirmed)) {
+      return;
     }
 
-    // Datos extraídos por OCR si se proporciona imagen
-    String? ocrTitle;
-    double? ocrPrice;
+    String? finalTitle;
+    double? finalPrice;
 
-    if (inputImage != null) {
-      try {
-        final RecognizedText recognizedText = await _textRecognizer.processImage(inputImage);
-        final lines = recognizedText.blocks.expand((b) => b.lines).map((l) => l.text).toList();
-        
-        // Lógica de extracción simple:
-        // 1. Precio: Buscar algo que termine en "€" o sea un número decimal al final
-        final priceRegex = RegExp(r'(\d+[,.]\d{2})\s*€');
-        for (var line in lines) {
-          final match = priceRegex.firstMatch(line);
-          if (match != null) {
-            ocrPrice = double.tryParse(match.group(1)!.replaceAll(',', '.'));
+    if (images != null && images.isNotEmpty) {
+      final List<Map<String, dynamic>> results = [];
+
+      for (var img in images) {
+        try {
+          final RecognizedText recognizedText = await _textRecognizer.processImage(img);
+          final lines = recognizedText.blocks.expand((b) => b.lines).map((l) => l.text).toList();
+          
+          double? p;
+          String? t;
+
+          // 1. Buscar precio
+          final priceRegex = RegExp(r'(\d+[,.]\d{2})\s*€');
+          for (var line in lines) {
+            final match = priceRegex.firstMatch(line);
+            if (match != null) {
+              p = double.tryParse(match.group(1)!.replaceAll(',', '.'));
+              break;
+            }
+          }
+
+          // 2. Buscar descripción (línea más larga que no sea precio ni código)
+          if (lines.isNotEmpty) {
+            t = lines.firstWhere(
+              (l) => !l.contains('€') && !l.contains('*') && l.length > 3,
+              orElse: () => '',
+            );
+          }
+
+          if (t != null && t.isNotEmpty) {
+            results.add({'title': t, 'price': p});
+          }
+        } catch (e) {
+          print("OCR Error in frame: $e");
+        }
+      }
+
+      if (results.isNotEmpty) {
+        // Lógica de Consenso:
+        if (results.length >= 2) {
+          // Si los dos primeros coinciden, perfecto
+          if (results[0]['title'] == results[1]['title'] && results[0]['price'] == results[1]['price']) {
+            finalTitle = results[0]['title'];
+            finalPrice = results[0]['price'];
+          } else if (results.length >= 3) {
+            // Si hay 3, buscamos mayoría
+            // (Simplificado: si 1==2 o 1==3 o 2==3)
+            if (results[0]['title'] == results[2]['title'] && results[0]['price'] == results[2]['price']) {
+              finalTitle = results[0]['title'];
+              finalPrice = results[2]['price'];
+            } else if (results[1]['title'] == results[2]['title'] && results[1]['price'] == results[2]['price']) {
+              finalTitle = results[1]['title'];
+              finalPrice = results[1]['price'];
+            }
           }
         }
 
-        // 2. Descripción: Suele estar cerca del código. 
-        // En la foto está justo debajo del código de barras. 
-        // Como el código suele ser corto y en mayúsculas, buscamos líneas de texto largas.
-        if (lines.isNotEmpty) {
-          // Buscamos una línea que no sea el precio ni el código exacto
-          ocrTitle = lines.firstWhere(
-            (l) => !l.contains('€') && !l.contains('*') && l.length > 3,
-            orElse: () => 'Producto OCR',
-          );
+        // Si no hay consenso claro, cogemos el primero que tenga precio
+        if (finalTitle == null) {
+          final best = results.firstWhere((r) => r['price'] != null, orElse: () => results.first);
+          finalTitle = best['title'];
+          finalPrice = best['price'];
         }
-      } catch (e) {
-        print("OCR Error: $e");
       }
     }
 
     final newItem = ScannedItem(
       code: cleanCode,
-      description: ocrTitle ?? 'Buscando...',
-      price: ocrPrice ?? 0.0,
+      description: (finalTitle != null && finalTitle.isNotEmpty) ? finalTitle : 'Buscando...',
+      price: finalPrice ?? 0.0,
       scannedAt: DateTime.now(),
       isConfirmed: false,
-      notFoundInApi: ocrTitle == null,
+      notFoundInApi: finalTitle == null,
     );
     
     // Si ya existe uno "Pendiente" con el mismo código, no añadimos otro, 
@@ -92,7 +119,7 @@ class ScannedItemsNotifier extends StateNotifier<List<ScannedItem>> {
     state = [newItem, ...state];
 
     // Consulta API en paralelo (si no hay OCR o para validar)
-    if (ocrTitle == null) {
+    if (finalTitle == null) {
       final productData = await ApiClient.fetchProductData(cleanCode);
       if (productData != null) {
         state = [
@@ -109,6 +136,10 @@ class ScannedItemsNotifier extends StateNotifier<List<ScannedItem>> {
         ];
       }
     }
+  }
+
+  void removeItem(String code) {
+    state = state.where((item) => item.code != code).toList();
   }
 
   void confirmItem(String code) {
