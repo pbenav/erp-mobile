@@ -20,10 +20,12 @@ class ScannerScreen extends ConsumerStatefulWidget {
 class _ScannerScreenState extends ConsumerState<ScannerScreen> {
   final MobileScannerController controller = MobileScannerController(
     formats: const [BarcodeFormat.all],
+    returnImage: true,
   );
   
   bool isProcessing = false;
   final List<Uint8List> capturedFrames = [];
+  BarcodeCapture? lastCapture;
   String? lastCode;
 
   @override
@@ -43,26 +45,33 @@ class _ScannerScreenState extends ConsumerState<ScannerScreen> {
   }
 
   void _onBarcodeScanned(BarcodeCapture capture) async {
-    if (isProcessing) return;
-    final List<Barcode> barcodes = capture.barcodes;
-    if (barcodes.isEmpty || barcodes.first.rawValue == null) return;
+    final pendingItems = ref.read(scannedItemsProvider).where((item) => !item.isConfirmed);
+    if (isProcessing || pendingItems.isNotEmpty) return;
     
-    final rawCode = barcodes.first.rawValue!;
-    final image = capture.image;
+    // Simplemente guardamos la última captura válida como candidata
+    if (capture.barcodes.isNotEmpty && capture.image != null) {
+      lastCapture = capture;
+      setState(() {}); // Para actualizar estado del botón si fuera necesario
+    }
+  }
 
-    // Si es un nuevo código o el primero de la ráfaga
-    if (lastCode != rawCode) {
-      lastCode = rawCode;
+  Future<void> _manualTrigger() async {
+    if (lastCapture == null || isProcessing) return;
+    
+    final code = lastCapture!.barcodes.first.rawValue;
+    final image = lastCapture!.image;
+    
+    if (code != null && image != null) {
       capturedFrames.clear();
-      if (image != null) capturedFrames.add(image);
+      capturedFrames.add(image);
+      final rawCode = code; // Guardamos para evitar problemas de nulidad
       
-      // Iniciamos contador de ráfaga (esperamos 3 capturas o 500ms)
-      Timer(const Duration(milliseconds: 400), () => _startOcrProcessing(rawCode));
-    } else {
-      // Si recibimos más capturas del mismo código mientras esperamos, las añadimos
-      if (image != null && capturedFrames.length < 3) {
-        capturedFrames.add(image);
-      }
+      setState(() {
+         isProcessing = true;
+         lastCapture = null; // Limpiamos el candidato para el próximo escaneo
+      });
+
+      _startOcrProcessing(rawCode);
     }
   }
 
@@ -87,9 +96,6 @@ class _ScannerScreenState extends ConsumerState<ScannerScreen> {
 
     // Llamamos al servicio con la ruta de la imagen para que la procese Gemini
     await ref.read(scannedItemsProvider.notifier).processBarcode(code, imagePath: tempPath);
-    
-    if (!mounted) return;
-    await Future.delayed(const Duration(milliseconds: 300));
     
     if (mounted) {
       setState(() {
@@ -152,21 +158,65 @@ class _ScannerScreenState extends ConsumerState<ScannerScreen> {
                 ),
                 Center(
                   child: Container(
-                    width: 220, // Menos ancho según feedback del usuario
-                    height: 160, // Más alto para compensar y encuadrar mejor la etiqueta
+                    width: 240, 
+                    height: 140, 
                     decoration: BoxDecoration(
-                      border: Border.all(color: Colors.cyanAccent, width: 2.5),
-                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(
+                        color: lastCapture != null ? Colors.greenAccent : Colors.cyanAccent, 
+                        width: 3.0
+                      ),
+                      borderRadius: BorderRadius.circular(20),
                       boxShadow: [
                         BoxShadow(
-                          color: Colors.cyanAccent.withOpacity(0.3),
-                          blurRadius: 10,
+                          color: (lastCapture != null ? Colors.greenAccent : Colors.cyanAccent).withOpacity(0.4),
+                          blurRadius: 15,
                           spreadRadius: 2,
                         )
                       ],
                     ),
+                    child: Align(
+                      alignment: Alignment.topCenter,
+                      child: Container(
+                        margin: const EdgeInsets.only(top: 8),
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                        decoration: BoxDecoration(color: Colors.black38, borderRadius: BorderRadius.circular(10)),
+                        child: Text(
+                          lastCapture != null ? "LISTO PARA ESCANEAR" : "ENCUADRE LA ETIQUETA",
+                          style: TextStyle(
+                            color: lastCapture != null ? Colors.greenAccent : Colors.cyanAccent,
+                            fontSize: 10,
+                            fontWeight: FontWeight.bold
+                          ),
+                        ),
+                      ),
+                    ),
                   ),
                 ),
+                // Botón de Disparo (ESCANEAR)
+                if (!isProcessing && pendingItems.isEmpty)
+                  Positioned(
+                    bottom: 30,
+                    left: 0,
+                    right: 0,
+                    child: Center(
+                      child: GestureDetector(
+                        onTap: _manualTrigger,
+                        child: Container(
+                          width: 80,
+                          height: 80,
+                          decoration: BoxDecoration(
+                            color: lastCapture != null ? Colors.orange : Colors.grey.withOpacity(0.5),
+                            shape: BoxShape.circle,
+                            border: Border.all(color: Colors.white, width: 4),
+                            boxShadow: [
+                              BoxShadow(color: Colors.black26, blurRadius: 10, offset: const Offset(0, 4))
+                            ],
+                          ),
+                          child: const Icon(Icons.camera_alt, color: Colors.white, size: 40),
+                        ),
+                      ),
+                    ),
+                  ),
                 if (isProcessing)
                   Container(
                     color: Colors.black45,
@@ -312,7 +362,7 @@ class _ScannerScreenState extends ConsumerState<ScannerScreen> {
                                           ),
                                         IconButton(
                                           icon: const Icon(Icons.delete_outline, color: Colors.redAccent, size: 20),
-                                          onPressed: () => ref.read(scannedItemsProvider.notifier).removeItem(item.code),
+                                          onPressed: () => ref.read(scannedItemsProvider.notifier).decrementQuantity(item.code),
                                         ),
                                         Container(
                                           padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),

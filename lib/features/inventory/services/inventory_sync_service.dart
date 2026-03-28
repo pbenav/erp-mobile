@@ -57,6 +57,18 @@ class ScannedItemsNotifier extends StateNotifier<List<ScannedItem>> {
     state = state.where((item) => item.code != code).toList();
   }
 
+  void decrementQuantity(String code) {
+    final item = state.firstWhere((item) => item.code == code);
+    if (item.quantity > 1) {
+      state = [
+        for (final s in state)
+          if (s.code == code) s.copyWith(quantity: s.quantity - 1) else s
+      ];
+    } else {
+      removeItem(code);
+    }
+  }
+
   void confirmItem(String code) {
     state = [
       for (final item in state)
