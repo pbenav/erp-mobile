@@ -1,15 +1,24 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
 import '../models/scanned_item.dart';
 import '../../../core/network/api_client.dart';
 
 // Definimos un proveedor de listado mutable
-final scannedItemsProvider = StateNotifierProvider<ScannedItemsNotifier, List<ScannedItem>>((ref) {
+final scannedItemsProvider = NotifierProvider<ScannedItemsNotifier, List<ScannedItem>>(() {
   return ScannedItemsNotifier();
 });
 
-class ScannedItemsNotifier extends StateNotifier<List<ScannedItem>> {
-  ScannedItemsNotifier() : super([]);
+class ScannedItemsNotifier extends Notifier<List<ScannedItem>> {
+  @override
+  List<ScannedItem> build() {
+    ref.onDispose(() {
+      _textRecognizer.close();
+    });
+    return [];
+  }
 
+  final TextRecognizer _textRecognizer = TextRecognizer(script: TextRecognitionScript.latin);
   // Limpia el código escaneado quitando asteriscos
   String _cleanBarcode(String rawCode) {
     return rawCode.replaceAll('*', '').trim();
@@ -26,14 +35,40 @@ class ScannedItemsNotifier extends StateNotifier<List<ScannedItem>> {
     String? finalTitle;
     double? finalPrice;
 
-    // Si tenemos imagen, usamos la IA del Backend (Gemini)
+    // 1. Intento con OCR local (ML Kit) para tener algo rápido
+    if (imagePath != null) {
+      try {
+        final inputImage = InputImage.fromFilePath(imagePath);
+        final recognizedText = await _textRecognizer.processImage(inputImage);
+        
+        // Búsqueda simple de precio (ej: 00,00 o 0.00)
+        final priceRegex = RegExp(r'(\d+[,\.]\d{2})');
+        for (final block in recognizedText.blocks) {
+          for (final line in block.lines) {
+             if (finalPrice == null) {
+               final match = priceRegex.firstMatch(line.text);
+               if (match != null) {
+                 finalPrice = double.tryParse(match.group(1)!.replaceAll(',', '.'));
+               }
+             }
+             // El nombre suele ser el bloque con más texto o el primero grande
+             if (finalTitle == null && line.text.length > 5) {
+               finalTitle = line.text;
+             }
+          }
+        }
+      } catch (e) {
+        debugPrint("Error in local OCR: $e");
+      }
+    }
+
+    // 2. Intento con IA del Backend (Gemini) - Sobrescribe si tiene éxito
     if (imagePath != null) {
       final aiData = await ApiClient.scanLabelWithAi(imagePath);
       if (aiData != null) {
-        finalTitle = aiData['name'] ?? aiData['description'];
-        finalPrice = (aiData['price'] as num?)?.toDouble();
+        finalTitle = aiData['name'] ?? aiData['description'] ?? finalTitle;
+        finalPrice = (aiData['price'] as num?)?.toDouble() ?? finalPrice;
         
-        // Si el backend encontró el producto en la DB, podemos usar esos datos
         if (aiData['in_database'] == true) {
           finalTitle = aiData['database_name'] ?? finalTitle;
           finalPrice = (aiData['database_price'] as num?)?.toDouble() ?? finalPrice;
