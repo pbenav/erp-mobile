@@ -79,30 +79,45 @@ class _ScannerScreenState extends ConsumerState<ScannerScreen> {
     if (isProcessing) return;
     setState(() => isProcessing = true);
 
-    await AudioHapticFeedback.playSuccessBeep();
+    try {
+      await AudioHapticFeedback.playSuccessBeep();
 
-    String? tempPath;
-    if (capturedFrames.isNotEmpty) {
-      try {
-        final tempDir = await getTemporaryDirectory();
-        final file = File('${tempDir.path}/last_scan.jpg');
-        // Usamos el ÚLTIMO fotograma para asegurar mejor enfoque
-        await file.writeAsBytes(capturedFrames.last);
-        tempPath = file.path;
-      } catch (e) {
-        debugPrint("Error saving temp frame: $e");
+      String? tempPath;
+      if (capturedFrames.isNotEmpty) {
+        try {
+          final tempDir = await getTemporaryDirectory();
+          final file = File('${tempDir.path}/last_scan.jpg');
+          // Usamos el ÚLTIMO fotograma para asegurar mejor enfoque
+          await file.writeAsBytes(capturedFrames.last);
+          tempPath = file.path;
+        } catch (e) {
+          debugPrint("Error saving temp frame: $e");
+        }
       }
-    }
 
-    // Llamamos al servicio con la ruta de la imagen para que la procese Gemini
-    await ref.read(scannedItemsProvider.notifier).processBarcode(code, imagePath: tempPath);
-    
-    if (mounted) {
-      setState(() {
-        isProcessing = false;
-        lastCode = null;
-        capturedFrames.clear();
-      });
+      // Llamamos al servicio con la ruta de la imagen para que la procese Gemini
+      await ref.read(scannedItemsProvider.notifier).processBarcode(code, imagePath: tempPath);
+      
+      if (mounted) {
+        setState(() {
+          lastCode = null;
+          capturedFrames.clear();
+        });
+      }
+    } catch (e) {
+      debugPrint("Error in _startOcrProcessing: $e");
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text("Error al procesar con IA. Inténtelo de nuevo."),
+            backgroundColor: Colors.redAccent,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() => isProcessing = false);
+      }
     }
   }
 
